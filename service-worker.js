@@ -2,7 +2,7 @@
 // tras la primera visita. El PDF de letras va embebido dentro de index.html, así
 // que cachear index.html ya incluye todo lo necesario.
 
-var CACHE_NAME = 'setlist-app-v7'; // <-- incrementar en cada actualización para forzar refresco
+var CACHE_NAME = 'setlist-app-v9'; // <-- incrementar en cada actualización para forzar refresco
 var FILES_TO_CACHE = [
   './',
   './index.html',

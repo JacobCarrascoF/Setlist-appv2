@@ -528,6 +528,8 @@
     <button class="btn" id="addPauseBtn">+ Añadir Pausa</button>
     <button class="btn" id="exportCodeBtn">Exportar Código</button>
     <button class="btn" id="importToggleBtn">Importar Setlist</button>
+    <button class="btn" id="importPasteBtn">Pegar código</button>
+    <input type="file" id="importFileInput" accept=".txt,text/plain" style="display:none">
     <button class="btn" id="resetBtn">Restablecer orden original</button>
   </div>
 
@@ -997,7 +999,7 @@ document.getElementById('exportCodeBtn').onclick = function(){
 };
 
 // ---------- Importar Setlist (pegar código y reconstruir el orden) ----------
-document.getElementById('importToggleBtn').onclick = function(){
+document.getElementById('importPasteBtn').onclick = function(){
   var box = document.getElementById('importBox');
   var isOpen = box.style.display !== 'none';
   box.style.display = isOpen ? 'none' : 'block';
@@ -1023,24 +1025,31 @@ function normalizeSongName(str){
     .trim();
 }
 
-document.getElementById('importConfirmBtn').onclick = function(){
-  var raw = document.getElementById('importTextarea').value;
-  var feedback = document.getElementById('importFeedback');
+// Importa un setlist desde texto (pegado o leído de un archivo).
+// Los errores se muestran en "feedback"; el resultado correcto, en el aviso persistente.
+function importSetlistFromText(raw, feedback){
+  raw = (raw || '').replace(/^\uFEFF/, '');
 
   if(!raw.trim()){
-    feedback.textContent = 'Pega primero el código del setlist.';
+    feedback.textContent = 'El código está vacío.';
     feedback.className = 'import-feedback error';
-    return;
+    return false;
   }
 
-  var lines = raw.split('\n')
-    .map(function(l){ return l.trim(); })
-    .filter(function(l){ return l && l.charAt(0) !== '#'; });
+  var allLines = raw.split('\n').map(function(l){ return l.trim(); });
+
+  // Si el archivo viene de "Exportar Código", la primera línea es "# Título"
+  var importedTitle = null;
+  if(allLines[0] && allLines[0].indexOf('# ') === 0 && allLines[0].indexOf('# Código de repertorio') !== 0){
+    importedTitle = allLines[0].substring(2).trim();
+  }
+
+  var lines = allLines.filter(function(l){ return l && l.charAt(0) !== '#'; });
 
   if(lines.length === 0){
-    feedback.textContent = 'No se ha encontrado ninguna canción en el texto pegado.';
+    feedback.textContent = 'No se ha encontrado ninguna canción en el código.';
     feedback.className = 'import-feedback error';
-    return;
+    return false;
   }
 
   // Índice normalizado de todas las canciones conocidas
@@ -1067,25 +1076,57 @@ document.getElementById('importConfirmBtn').onclick = function(){
   }
 
   if(newSetlist.length === 0){
-    feedback.textContent = 'Ninguna de las canciones pegadas coincide con el listado maestro.';
+    feedback.textContent = 'Ninguna de las canciones coincide con el listado maestro.';
     feedback.className = 'import-feedback error';
-    return;
+    return false;
   }
 
   setlist = newSetlist;
+  if(importedTitle){ document.getElementById('titleInput').value = importedTitle; }
   render();
 
-  document.getElementById('importBox').style.display = 'none';
-  document.getElementById('importTextarea').value = '';
-
+  var songsLoaded = newSetlist.filter(function(id){ return !isPause(id); }).length;
   var persistentFeedback = document.getElementById('importFeedbackPersistent');
   if(notFound.length > 0){
-    persistentFeedback.textContent = 'Cargado con ' + newSetlist.length + ' canciones. No se encontraron: ' + notFound.join(', ');
+    persistentFeedback.textContent = 'Cargado con ' + songsLoaded + ' canciones. No se encontraron: ' + notFound.join(', ');
     persistentFeedback.className = 'import-feedback error';
   } else {
-    persistentFeedback.textContent = 'Setlist cargado correctamente (' + newSetlist.length + ' canciones).';
+    persistentFeedback.textContent = 'Setlist cargado correctamente (' + songsLoaded + ' canciones).';
     persistentFeedback.className = 'import-feedback';
   }
+  return true;
+}
+
+// Cuadro de texto ("Pegar código")
+document.getElementById('importConfirmBtn').onclick = function(){
+  var ok = importSetlistFromText(document.getElementById('importTextarea').value, document.getElementById('importFeedback'));
+  if(ok){
+    document.getElementById('importBox').style.display = 'none';
+    document.getElementById('importTextarea').value = '';
+  }
+};
+
+// "Importar Setlist": abre el selector de archivos y carga el .txt al elegirlo
+document.getElementById('importToggleBtn').onclick = function(){
+  document.getElementById('importFileInput').click();
+};
+
+document.getElementById('importFileInput').onchange = function(){
+  var input = this;
+  var file = input.files && input.files[0];
+  if(!file) return;
+  var persistentFeedback = document.getElementById('importFeedbackPersistent');
+  var reader = new FileReader();
+  reader.onload = function(){
+    importSetlistFromText(String(reader.result || ''), persistentFeedback);
+    input.value = ''; // permite volver a elegir el mismo archivo
+  };
+  reader.onerror = function(){
+    persistentFeedback.textContent = 'No se pudo leer el archivo.';
+    persistentFeedback.className = 'import-feedback error';
+    input.value = '';
+  };
+  reader.readAsText(file);
 };
 
 // ---------- Añadir canción nueva al listado maestro ----------
@@ -1317,7 +1358,7 @@ async function generateSetlistPdf(title){
   }
 
   var bytes = await doc.save();
-  var filename = title.replace(/[^a-z0-9áéíóúñ ]/gi,'').trim() || 'Repertorio';
+  var filename = title.replace(/[\\\/:*?"<>|]/g,'').replace(/\s+/g,' ').trim() || 'Repertorio';
   return { bytes: bytes, filename: filename + ' - Setlist.pdf' };
 }
 
@@ -1388,6 +1429,35 @@ function showBlockedLink(url, name){
   fallbackLinksBox.appendChild(link);
 }
 
+// Descarga directa con nombre de archivo. Si el navegador no la dispara,
+// queda un enlace visible para tocarlo (también con nombre de archivo).
+function downloadPdfDirect(bytes, filename){
+  var blob = new Blob([bytes], { type: 'application/pdf' });
+  var url = URL.createObjectURL(blob);
+
+  var a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  a.style.display = 'none';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+
+  var box = document.getElementById('downloadFallback');
+  box.innerHTML = '';
+  box.style.display = 'block';
+  var msg = document.createElement('p');
+  msg.style.cssText = 'font-family:Courier New,monospace; font-size:12px; margin:0 0 8px;';
+  msg.textContent = 'Descargando… Si no aparece en tus descargas, toca aquí:';
+  box.appendChild(msg);
+  var link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.textContent = '📄 ' + filename;
+  link.style.cssText = 'display:block; padding:10px; background:#fff; border:1px solid #ddd; border-radius:4px; text-decoration:none; color:#1c1a17; font-family:Courier New,monospace; font-size:13px; word-break:break-word;';
+  box.appendChild(link);
+}
+
 // ---------- Botón: Exportar Setlist ----------
 document.getElementById('exportSetlistBtn').onclick = async function(){
   var btn = document.getElementById('exportSetlistBtn');
@@ -1402,8 +1472,7 @@ document.getElementById('exportSetlistBtn').onclick = async function(){
   try{
     var title = document.getElementById('titleInput').value || 'Repertorio';
     var setlistPdf = await generateSetlistPdf(title);
-    var blockedUrl = openPdfBytes(setlistPdf.bytes, setlistPdf.filename);
-    if(blockedUrl) showBlockedLink(blockedUrl, setlistPdf.filename);
+    downloadPdfDirect(setlistPdf.bytes, setlistPdf.filename);
   } catch(err){
     alert('No se pudo generar el Setlist: ' + err.message);
   } finally {
